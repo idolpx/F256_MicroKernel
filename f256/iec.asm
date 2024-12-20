@@ -8,6 +8,22 @@
                 .namespace  platform
 iec             .namespace
 
+flags           .byte       0
+; Standared IEC Serial = 0
+; Byte sent under ATN  = 1
+; JiffyDOS Active      = 2
+; JiffyDOS LOAD        = 3
+; Bit[0] FLAG_UNDER_ATN
+; Bit[1] FLAG_JIFFYDOS_ACTIVE
+; Bit[2] FLAG_JIFFYDOS_LOAD
+; Bit[3] Always 0
+; Bit[4] Always 0
+; Bit[5] Always 0
+; Bit[6] Always 0
+; Bit[7] Always 0
+FLAG_UNDER_ATN       = $01
+FLAG_JIFFYDOS_ACTIVE = $02
+FLAG_JIFFYDOS_LOAD   = $04
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; Low level port routines.
@@ -299,6 +315,13 @@ atn_common
             jsr     platform.iec.port.release_DATA
             cli
 
+          ; set iec.flags.FLAG_UNDER_ATN
+            pha
+            lda    flags
+            ora    FLAG_UNDER_ATN
+            sta    flags
+            pla
+
           ; Now give the devices ~1ms to start listening.
             jsr     sleep_1ms
             
@@ -427,6 +450,36 @@ _loop
 
           ; Clock out the next bit
             jsr     platform.iec.port.assert_CLOCK
+
+            ; If this is the last bit let's see if the device is JiffyDOS enabled
+            cpx     #0
+            bne     _send_bit     ; Not last bit so just send bit
+
+            ; Only do this check if we are sending a command byte
+            pha
+            lda     flags
+            and     FLAG_UNDER_ATN
+            beq     _send_bit     ; Not under ATN so just send bit
+
+            ; Wait 470us for JiffyDOS ack
+            ; Test the port every 20us
+            lda     #23
+_jd_ack   
+            jsr     sleep_20us
+            jsr     platform.iec.port.read_DATA
+            bcs     _jd_ack_yes
+            dec     a
+            bne     _jd_ack
+            sec
+            jmp     _send_bit
+_jd_ack_yes    
+            lda     flags
+            ora     FLAG_JIFFYDOS_ACTIVE
+            sta     flags
+            jmp     _jd_ack    ; Continue for duration
+
+_send_bit
+            pla
             jsr     sleep_20us
             lsr     a
             bcs     _one
@@ -446,6 +499,8 @@ _clock
             jsr     sleep_20us
             dex
             bne     _loop
+
+_byte_sent
             plx
             
           ; Finish the last bit and wait for the listeners to ack.
